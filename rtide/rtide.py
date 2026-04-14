@@ -1166,7 +1166,10 @@ class RTide:
             plt.plot(history2.history['val_loss'], label='Val Loss')
             plt.legend()
             plt.title('Standard Training')
+            plt.xlabel("Epoch")
+            plt.ylabel("MSE")
             plt.show()
+            plt.savefig("Figure 1")
 
         # Train predictions
         if trend is None:
@@ -1698,7 +1701,7 @@ class RTide:
             if self.n_outputs == 1:
                 plt.plot(indexs, obs, color='k', label='Actual')
                 plt.plot(indexs, pred, color='red', label='RTide')
-                ylabel = 'Sea Level (units)'
+                ylabel = 'Sea Level (m)'
                 if verbose:
                     print('Train Results')
                     _ = calc_stats(pred, obs)
@@ -1817,7 +1820,12 @@ class RTide:
         n_outputs = self.n_outputs
 
         test_X = dataset[:, n_outputs:num_features]
-        scaled_test_X = self.scaler_X.transform(test_X.reshape(-1, 1)).reshape(test_X.shape)
+
+        # Scale X values
+        scaled_test_X = self._transform_X(
+            test_X,
+            featurewise=getattr(self, "featurewise_X_scaling", False),
+        )
 
         # Check if model uses trend estimation
         trend = getattr(self, 'trend', None)
@@ -1882,12 +1890,16 @@ class RTide:
             shap_for_output = shap_vals
 
         n_exog = len(self.exog_columns)
+
         for ind in range(n_exog):
             shap.dependence_plot(
                 ind,
                 shap_for_output,
                 scaled_test_X[:],
-                show=True,
+                show=False,
                 feature_names=column_names,
                 interaction_index=None,
             )
+
+            plt.savefig(fname)
+            
