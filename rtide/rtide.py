@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 from sklearn.preprocessing import StandardScaler
 import joblib
 from sklearn.utils import shuffle
+from sklearn.decomposition import PCA
 
 import tensorflow as tf
 from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
@@ -620,6 +621,8 @@ class RTide:
             self_prediction (bool) or list: If list, lags given in the list of the output variable are 
                 included as features.
             radiational (bool): If False, does not include radiational tide components (From MC 1966).
+            orthogonalization_scheme (str): "" (default) for no pre-orthogonalization. "pca" to use
+                PCA to transform input into orthogonal basis.  
         """
         defaults = {
             "uniform_lags": False,
@@ -647,6 +650,7 @@ class RTide:
             "allow_precompute_write": None,
             "input_config": None,
             "ephemeris": None,
+            "orthogonalization_scheme": False
         }
         inputs = {**defaults, **kwargs}
 
@@ -679,6 +683,8 @@ class RTide:
             self.use_precomputed_inputs = True
             self.precomputed_cache_dir = os.path.expanduser("~/.cache/rtide")
         
+        if inputs["orthogonalization_scheme"] is not None:
+            self.orthogonalization_scheme = str(inputs["orthogonalization_scheme"])
 
         try:
             # Local variables for backward compatibility with existing function logic
@@ -829,6 +835,30 @@ class RTide:
                     ts_to_concat.append(pd.DataFrame({f"{col}_{lagh}": shifted.to_numpy()}, index=self.ts.index))
 
             prepped = pd.concat(ts_to_concat, axis=1)
+
+            if self.orthogonalization_scheme == "pca":
+                # TODO(ueastwood): make robuts to exogeneous inputs
+                # TODO(ueastwood): featurewise scaling pre PCA?
+                # TODO(ueastwood): number of dimensions for PCA reduction
+
+                # do not include output columns in orthogonalization
+                X_raw = prepped.iloc[:, self.n_outputs:]
+
+                if not prediction:
+                    self.pca = PCA()
+                    print("Fitting PCA transform to prepped data.")
+                    self.pca.fit_transform(X_raw)
+
+                    # TODO(ueastwood) option to save fitted PCA model
+                
+                print("Applying PCA Transform to data.")
+                pca_result = self.pca.transform(X_raw)
+                pca_df = pd.DataFrame(
+                    pca_result, 
+                    index=prepped.index,
+                )
+
+                prepped = pd.concat([prepped.iloc[:, :self.n_outputs], pca_df], axis=1)
 
             if prediction:
                 self.prediction_dfs = prepped
