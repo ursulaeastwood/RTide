@@ -133,6 +133,7 @@ class RTide:
         self.scaler_Y: Optional[StandardScaler] = None
         self.featurewise_X_scaling: bool = False
         self.history: Optional[dict] = None
+        self.pca: Optional[PCA] = None
 
         # Skyfield cached objects
         self._skyfield_cache: dict = {}
@@ -836,30 +837,6 @@ class RTide:
 
             prepped = pd.concat(ts_to_concat, axis=1)
 
-            if self.orthogonalization_scheme == "pca":
-                # TODO(ueastwood): make robuts to exogeneous inputs
-                # TODO(ueastwood): featurewise scaling pre PCA?
-                # TODO(ueastwood): number of dimensions for PCA reduction
-
-                # do not include output columns in orthogonalization
-                X_raw = prepped.iloc[:, self.n_outputs:]
-
-                if not prediction:
-                    self.pca = PCA()
-                    print("Fitting PCA transform to prepped data.")
-                    self.pca.fit_transform(X_raw)
-
-                    # TODO(ueastwood) option to save fitted PCA model
-                
-                print("Applying PCA Transform to data.")
-                pca_result = self.pca.transform(X_raw)
-                pca_df = pd.DataFrame(
-                    pca_result, 
-                    index=prepped.index,
-                )
-
-                prepped = pd.concat([prepped.iloc[:, :self.n_outputs], pca_df], axis=1)
-
             if prediction:
                 self.prediction_dfs = prepped
                 if save and (self.location_mode == "station"):
@@ -1069,6 +1046,7 @@ class RTide:
                 print('Trend Estimation:', trend)
 
         df = self.prepped_dfs.dropna()
+
         dataset = df.values
         num_cols = dataset.shape[1]
         n_outputs = self.n_outputs
@@ -1080,6 +1058,12 @@ class RTide:
         # Scale
         scaled_train_X = self._fit_scale_X(train_X, featurewise=featurewise_X_scaling)
         scaled_train_X = self._transform_X(train_X, featurewise=featurewise_X_scaling)
+
+        # Fit PCA for orthogonalizing inputs
+        if self.orthogonalization_scheme == "pca":
+            print("Fitting PCA transform to scaled training data.")
+            self.pca = PCA()
+            scaled_train_X = self.pca.fit_transform(scaled_train_X)
 
         self.scaler_Y = StandardScaler()
         scaled_train_Y = self.scaler_Y.fit_transform(train_Y)
@@ -1359,6 +1343,10 @@ class RTide:
             model.save(f'{self.path}_model_weights.keras')
             joblib.dump(self.scaler_X, f'{self.path}_scaler_X.save')
             joblib.dump(self.scaler_Y, f'{self.path}_scaler_Y.save')
+
+            # save PCA if fitted
+            if self.pca is not None:
+                joblib.dump(self.pca, f'{self.path}_pca.save')
             
             # Save metadata including trend configuration
             meta = {
@@ -1415,6 +1403,8 @@ class RTide:
         try:
             self.scaler_X = joblib.load(f"{self.path}_scaler_X.save")
             self.scaler_Y = joblib.load(f"{self.path}_scaler_Y.save")
+            self.pca = joblib.load(f"{self.path}_pca.save")
+
             meta_path = f"{self.path}_meta.json"
             if os.path.exists(meta_path):
                 meta = json.loads(open(meta_path, "r", encoding="utf-8").read())
@@ -1429,6 +1419,7 @@ class RTide:
         except Exception:
             pass
         return self
+    
     def Predict(self, df, featurewise_X_scaling = None):
         """
         Function to generate predictions using the learned model at associated times.
@@ -1513,6 +1504,10 @@ class RTide:
 
         test_X = dataset[:, n_outputs:num_cols]
         scaled_test_X = self._transform_X(test_X, featurewise=featurewise_X_scaling)
+
+        # Apply PCA if fitted
+        if self.pca is not None:
+            scaled_test_X = self.pca.transform(scaled_test_X)
 
         # Check if model uses trend estimation
         trend = getattr(self, 'trend', None)
