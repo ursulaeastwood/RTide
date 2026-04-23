@@ -134,6 +134,7 @@ class RTide:
         self.featurewise_X_scaling: bool = False
         self.history: Optional[dict] = None
         self.pca: Optional[PCA] = None
+        self.ortho_config: dict = {}
 
         # Skyfield cached objects
         self._skyfield_cache: dict = {}
@@ -651,7 +652,7 @@ class RTide:
             "allow_precompute_write": None,
             "input_config": None,
             "ephemeris": None,
-            "orthogonalization_scheme": False
+            "ortho_config": {},
         }
         inputs = {**defaults, **kwargs}
 
@@ -684,8 +685,8 @@ class RTide:
             self.use_precomputed_inputs = True
             self.precomputed_cache_dir = os.path.expanduser("~/.cache/rtide")
         
-        if inputs["orthogonalization_scheme"] is not None:
-            self.orthogonalization_scheme = str(inputs["orthogonalization_scheme"])
+        if inputs.get("ortho_config"):
+            self.ortho_config = dict(inputs["ortho_config"])
 
         try:
             # Local variables for backward compatibility with existing function logic
@@ -1059,11 +1060,21 @@ class RTide:
         scaled_train_X = self._fit_scale_X(train_X, featurewise=featurewise_X_scaling)
         scaled_train_X = self._transform_X(train_X, featurewise=featurewise_X_scaling)
 
-        # Fit PCA for orthogonalizing inputs
-        if self.orthogonalization_scheme == "pca":
-            print("Fitting PCA transform to scaled training data.")
-            self.pca = PCA()
-            scaled_train_X = self.pca.fit_transform(scaled_train_X)
+        # Optional orthogonalization
+        if self.ortho_config:        
+            variance_threshold = self.ortho_config.get("variance_threshold")
+            n_components = self.ortho_config.get("n_components")
+
+            if variance_threshold is not None:
+                self.pca = PCA(n_components=variance_threshold)
+            elif n_components is not None:
+                self.pca = PCA(n_components=n_components)
+            else:
+                self.pca = PCA()
+
+            self.pca.fit(scaled_train_X)
+            scaled_train_X = self.pca.transform(scaled_train_X)
+
 
         self.scaler_Y = StandardScaler()
         scaled_train_Y = self.scaler_Y.fit_transform(train_Y)
@@ -1180,7 +1191,7 @@ class RTide:
             plt.plot(history2.history['val_loss'], label='Val Loss')
             plt.legend()
             plt.title('Standard Training')
-            plt.show()
+            plt.savefig(f"{self.path}_loss.png")
 
         # Train predictions
         if trend is None:
@@ -1344,7 +1355,7 @@ class RTide:
             joblib.dump(self.scaler_X, f'{self.path}_scaler_X.save')
             joblib.dump(self.scaler_Y, f'{self.path}_scaler_Y.save')
 
-            # save PCA if fitted
+            # Save PCA if fitted
             if self.pca is not None:
                 joblib.dump(self.pca, f'{self.path}_pca.save')
             
@@ -1354,7 +1365,9 @@ class RTide:
                 'n_outputs': n_outputs,
                 'output_columns': self.output_columns,
                 'trend': trend,
+                'ortho_config': self.ortho_config
             }
+
             if trend is not None:
                 meta['train_time_start'] = str(self.train_time_start)
                 meta['train_time_end'] = str(self.train_time_end)
@@ -1411,6 +1424,7 @@ class RTide:
                 self.featurewise_X_scaling = bool(meta.get("featurewise_X_scaling", False))
                 self.n_outputs = int(meta.get("n_outputs", self.n_outputs))
                 self.output_columns = list(meta.get("output_columns", self.output_columns))
+                self.ortho_config = meta.get("pca_config", {})
                 # Load trend configuration
                 self.trend = meta.get("trend", None)
                 if self.trend is not None:
