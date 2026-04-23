@@ -1052,6 +1052,11 @@ class RTide:
         num_cols = dataset.shape[1]
         n_outputs = self.n_outputs
 
+        # keep hidden_nodes as number of features pre dimension reduction
+        input_dims = num_cols - n_outputs
+        if hidden_nodes == 'standard':
+            hidden_nodes = input_dims
+
         # X/Y split
         train_X = dataset[:, n_outputs:num_cols]
         train_Y = dataset[:, 0:n_outputs]
@@ -1060,20 +1065,32 @@ class RTide:
         scaled_train_X = self._fit_scale_X(train_X, featurewise=featurewise_X_scaling)
         scaled_train_X = self._transform_X(train_X, featurewise=featurewise_X_scaling)
 
+        # TODO(ueastwood): currently all X columns are getting orthogonalized together 
+        # (exogeneous, radiational and gravitational). Should blockwise orthogonalize.
+
         # Optional orthogonalization
-        if self.ortho_config:        
+        if self.ortho_config: 
+            print(f"Orthogonalization config set: {self.ortho_config}")
+            print(f"Current input dimension is: {input_dims}")    
             variance_threshold = self.ortho_config.get("variance_threshold")
             n_components = self.ortho_config.get("n_components")
 
             if variance_threshold is not None:
+                print("Variance threshold set.")
                 self.pca = PCA(n_components=variance_threshold)
             elif n_components is not None:
+                print("n_components set")
                 self.pca = PCA(n_components=n_components)
             else:
+                print("no dimension reduction")
                 self.pca = PCA()
 
+            print("Fitting PCA")
             self.pca.fit(scaled_train_X)
             scaled_train_X = self.pca.transform(scaled_train_X)
+            input_dims = self.pca.n_components_
+            print(f"After PCA input dims are: {input_dims}")
+
 
 
         self.scaler_Y = StandardScaler()
@@ -1086,10 +1103,6 @@ class RTide:
             self.train_time_end = df.index.max()
         else:
             train_time = None
-
-        input_dims = num_cols - n_outputs
-        if hidden_nodes == 'standard':
-            hidden_nodes = input_dims
 
         if not early_stoppage:
             early_stoppage = train_epochs2
@@ -1132,7 +1145,9 @@ class RTide:
             train_time = None
             trend_initial_coeffs = None
 
-  
+        print(f"Number of hidden nodes: {hidden_nodes}")
+        print(f"Type of hidden_nodes: {type(hidden_nodes)}")
+        
         # Model
         model = models.build_model(
         architecture=architecture,
