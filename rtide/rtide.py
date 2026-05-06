@@ -8,6 +8,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 from sklearn.preprocessing import StandardScaler
+from sklearn.decomposition import PCA
 import joblib
 from sklearn.utils import shuffle
 
@@ -111,6 +112,9 @@ class RTide:
         # Schema inference (outputs + exogenous columns)
         self._infer_io_schema()
         self._validate_inputs()
+
+        # Pre-computed PCA transform
+        self.pca: Optional[PCA] = None
 
         # State
         self.sample_rate = None
@@ -676,6 +680,8 @@ class RTide:
             self.use_precomputed_inputs = True
             self.precomputed_cache_dir = os.path.expanduser("~/.cache/rtide")
         
+        if inputs.get("pca_path", False):
+            self.pca = joblib.load(inputs["pca_path"])
 
         try:
             # Local variables for backward compatibility with existing function logic
@@ -1040,6 +1046,11 @@ class RTide:
         num_cols = dataset.shape[1]
         n_outputs = self.n_outputs
 
+        # keep hidden_nodes as number of features pre dimension reduction
+        input_dims = num_cols - n_outputs
+        if hidden_nodes == 'standard':
+            hidden_nodes = input_dims
+
         # X/Y split
         train_X = dataset[:, n_outputs:num_cols]
         train_Y = dataset[:, 0:n_outputs]
@@ -1051,6 +1062,15 @@ class RTide:
         self.scaler_Y = StandardScaler()
         scaled_train_Y = self.scaler_Y.fit_transform(train_Y)
 
+        # Apply pre-computed PCA
+        if self.pca is not None:
+            scaled_train_X = self.pca.transform(scaled_train_X)
+            self.pcad_train_X = scaled_train_X
+
+
+            # Depending the PCA that was done, we might have reduced components.
+            input_dims = self.pca.n_components_
+
         # Compute normalized time for trend estimation
         if trend is not None:
             train_time = self._compute_normalized_time(df.index)
@@ -1058,10 +1078,6 @@ class RTide:
             self.train_time_end = df.index.max()
         else:
             train_time = None
-
-        input_dims = num_cols - n_outputs
-        if hidden_nodes == 'standard':
-            hidden_nodes = input_dims
 
         if not early_stoppage:
             early_stoppage = train_epochs2
@@ -1164,7 +1180,7 @@ class RTide:
             plt.legend()
             plt.title('Standard Training')
             plt.savefig(f"{self.path}_loss.png")
-            
+
         # Train predictions
         if trend is None:
             train_predictions = self.scaler_Y.inverse_transform(model.predict(scaled_train_X))
@@ -1372,6 +1388,11 @@ class RTide:
 
         test_X = dataset[:, n_outputs:num_cols]
         scaled_test_X = self._transform_X(test_X, featurewise=featurewise_X_scaling)
+
+        # Apply pre-computed PCA 
+        if self.pca is not None:
+            scaled_test_X = self.pca.transform(scaled_test_X)
+            self.pcad_test_X = scaled_test_X
 
         # Check if model uses trend estimation
         trend = getattr(self, 'trend', None)

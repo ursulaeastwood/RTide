@@ -1,6 +1,6 @@
 import tensorflow as tf
 from tensorflow.keras import regularizers
-from tensorflow.keras.layers import Dense, Input, Layer, Concatenate
+from tensorflow.keras.layers import Dense, Input, Layer
 from tensorflow.keras.models import Model, Sequential
 
 from .utils import AddLayer
@@ -242,7 +242,7 @@ def build_response_model(
         # Hidden stack
         if depth > 1:
             for layer_number in range(2, depth + 1):
-                units = input_dims if layer_number < depth else input_dims * n_outputs
+                units = hidden_nodes if layer_number < depth else hidden_nodes * n_outputs
                 model.add(
                     Dense(
                         units,
@@ -289,7 +289,7 @@ def build_response_model(
     
     if depth > 1:
         for layer_number in range(2, depth + 1):
-            units = input_dims if layer_number < depth else input_dims * n_outputs
+            units = hidden_nodes if layer_number < depth else hidden_nodes * n_outputs
             x = Dense(
                 units,
                 activation="tanh",
