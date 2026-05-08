@@ -29,6 +29,11 @@ DEFAULT_INPUT_CONFIG = {
     "Gravitational": {"degrees": [2, 3], "orders": {2: [1, 2], 3: [1, 2, 3]}},
 }
 
+UNCORRELATED_INPUT_CONFIG = {
+    "Radiational": {"degrees": [1], "orders": {1: [1]}},
+    "Gravitational": {"degrees": [2, 3], "orders": {2: [1], 3: [1]}},
+}
+
 
 def _ensure_datetime_index(df: pd.DataFrame) -> pd.DataFrame:
     if not isinstance(df.index, pd.DatetimeIndex):
@@ -105,7 +110,7 @@ class RTide:
         self.allow_precompute_write = True
 
         # Input-function configuration
-        self.input_config = DEFAULT_INPUT_CONFIG
+        self.input_config = UNCORRELATED_INPUT_CONFIG
         self.ephemeris = "de421.bsp"
 
         # Schema inference (outputs + exogenous columns)
