@@ -1,30 +1,20 @@
 import os
 import json
 import hashlib
-import warnings
-from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 
 from sklearn.preprocessing import StandardScaler
-import joblib
-from sklearn.utils import shuffle
 from sklearn.decomposition import PCA
 
 import tensorflow as tf
-from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
 
-import utide
-import shap
 
 from skyfield.api import load, wgs84
 
-from .utils import cosd, sind, custom_round, calc_stats, save_inputs_to_pickle, load_inputs_from_pickle, fit_trend_initial_coeffs
-from .models import build_model, get_custom_objects
-from . import models
+from .utils import cosd, custom_round, save_inputs_to_pickle, load_inputs_from_pickle
 
 
 DEFAULT_INPUT_CONFIG = {
@@ -1070,6 +1060,7 @@ class RTide:
 
         # Optional orthogonalization
         if self.ortho_config: 
+            
             print(f"Orthogonalization config set: {self.ortho_config}")
             print(f"Current input dimension is: {input_dims}")    
             variance_threshold = self.ortho_config.get("variance_threshold")
@@ -1086,12 +1077,30 @@ class RTide:
                 self.pca = PCA()
 
             print("Fitting PCA")
-            self.pca.fit(scaled_train_X)
-            scaled_train_X = self.pca.transform(scaled_train_X)
-            input_dims = self.pca.n_components_
-            print(f"After PCA input dims are: {input_dims}")
+
+            # if exogenous inputs, separate these before transform
+            if self.multi:
+                n_exog = len(self.exog_columns)
+                scaled_train_X_exog = scaled_train_X[:, 0:n_exog]
+
+                # fit PCA to the tidal forcings
+                scaled_train_X_tide = scaled_train_X[:, n_exog:]
+                self.pca.fit(scaled_train_X_tide)
+                scaled_train_X_tide = self.pca.transform(scaled_train_X_tide)
+                tide_dims = self.pca.n_components_
+                print(f"After PCA, tide input dims reduced to: {tide_dims}")
+
+                # rejoin data set
+                scaled_train_X = np.hstack((scaled_train_X_exog, scaled_train_X_tide))
+                input_dims = n_exog + tide_dims
 
 
+            else:
+                self.pca.fit(scaled_train_X)
+                scaled_train_X = self.pca.transform(scaled_train_X)
+                input_dims = self.pca.n_components_
+                print(f"After PCA input dims are: {input_dims}")              
+ 
 
         self.scaler_Y = StandardScaler()
         scaled_train_Y = self.scaler_Y.fit_transform(train_Y)
@@ -1536,7 +1545,21 @@ class RTide:
 
         # Apply PCA if fitted
         if self.pca is not None:
-            scaled_test_X = self.pca.transform(scaled_test_X)
+
+            if self.multi:
+                # separate exog columns before doing pca transform 
+                n_exog = len(self.exog_columns)
+                scaled_test_X_exog = scaled_test_X[:, 0:n_exog]
+                scaled_test_X_tide = scaled_test_X[:, n_exog:]
+
+                # pca transform on tidal part of input
+                scaled_test_X_tide = self.pca.transform(scaled_test_X_tide)
+
+                # rejoin full input matrix
+                scaled_test_X = np.hstack((scaled_test_X_exog, scaled_test_X_tide))
+
+            else:
+                scaled_test_X = self.pca.transform(scaled_test_X)
 
         # Check if model uses trend estimation
         trend = getattr(self, 'trend', None)
