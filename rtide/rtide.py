@@ -1,28 +1,26 @@
 import os
 import json
 import hashlib
-import warnings
-from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
 from sklearn.preprocessing import StandardScaler
+from sklearn.decomposition import PCA
 import joblib
 from sklearn.utils import shuffle
 
 import tensorflow as tf
 from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
 
-import utide
 import shap
 
 from skyfield.api import load, wgs84
 
-from .utils import cosd, sind, custom_round, calc_stats, save_inputs_to_pickle, load_inputs_from_pickle, fit_trend_initial_coeffs
-from .models import build_model, get_custom_objects
+from .utils import cosd, custom_round, calc_stats, save_inputs_to_pickle, load_inputs_from_pickle, fit_trend_initial_coeffs
+from .models import get_custom_objects
 from . import models
 
 
@@ -114,6 +112,9 @@ class RTide:
         # Schema inference (outputs + exogenous columns)
         self._infer_io_schema()
         self._validate_inputs()
+
+        # Pre-computed PCA transform
+        self.pca: Optional[PCA] = None
 
         # State
         self.sample_rate = None
@@ -679,6 +680,8 @@ class RTide:
             self.use_precomputed_inputs = True
             self.precomputed_cache_dir = os.path.expanduser("~/.cache/rtide")
         
+        if inputs.get("pca_path", False):
+            self.pca = joblib.load(inputs["pca_path"])
 
         try:
             # Local variables for backward compatibility with existing function logic
@@ -1043,6 +1046,11 @@ class RTide:
         num_cols = dataset.shape[1]
         n_outputs = self.n_outputs
 
+        # keep hidden_nodes as number of features pre dimension reduction
+        input_dims = num_cols - n_outputs
+        if hidden_nodes == 'standard':
+            hidden_nodes = input_dims
+
         # X/Y split
         train_X = dataset[:, n_outputs:num_cols]
         train_Y = dataset[:, 0:n_outputs]
@@ -1054,6 +1062,15 @@ class RTide:
         self.scaler_Y = StandardScaler()
         scaled_train_Y = self.scaler_Y.fit_transform(train_Y)
 
+        # Apply pre-computed PCA
+        if self.pca is not None:
+            scaled_train_X = self.pca.transform(scaled_train_X)
+            self.pcad_train_X = scaled_train_X
+
+
+            # Depending the PCA that was done, we might have reduced components.
+            input_dims = self.pca.n_components_
+
         # Compute normalized time for trend estimation
         if trend is not None:
             train_time = self._compute_normalized_time(df.index)
@@ -1061,10 +1078,6 @@ class RTide:
             self.train_time_end = df.index.max()
         else:
             train_time = None
-
-        input_dims = num_cols - n_outputs
-        if hidden_nodes == 'standard':
-            hidden_nodes = input_dims
 
         if not early_stoppage:
             early_stoppage = train_epochs2
@@ -1166,7 +1179,7 @@ class RTide:
             plt.plot(history2.history['val_loss'], label='Val Loss')
             plt.legend()
             plt.title('Standard Training')
-            plt.show()
+            plt.savefig(f"{self.path}_loss.png")
 
         # Train predictions
         if trend is None:
@@ -1214,111 +1227,6 @@ class RTide:
         else:
             rtide_noforcing = preds_train.copy()
             
-        # UTide baselines / harmonic equivalents.
-        try:
-            if trend is not None:
-                utide_trend = True
-            else:
-                utide_trend = False
-            if self.output_mode == 'elevation':
-                short_utide = utide.solve(
-                df.index,
-                df['observations'],
-                lat=self.lat,
-                method='ols',
-                conf_int='none',
-                verbose=False,
-                trend=utide_trend,
-                nodal=True,
-                )
-                utide_train_pred = utide.reconstruct(df.index, short_utide, verbose=False)
-                utide_train = utide_train_pred['h']
-
-                rtide_utide = utide.solve(
-                df.index,
-                rtide_noforcing,
-                lat=self.lat,
-                method='ols',
-                conf_int='none',
-                verbose=False,
-                trend=utide_trend,
-                nodal=True,
-                )
-
-                irls_utide = utide.solve(
-                df.index,
-                df['observations'],
-                lat=self.lat,
-                method='robust',
-                conf_int='none',
-                verbose=False,
-                trend=utide_trend,
-                nodal=True,
-                )
-
-                rtide_utide_reconstruction = utide.reconstruct(df.index, rtide_utide, verbose=False)
-                rtide_tide = rtide_utide_reconstruction['h']
-                irls_utide_reconstruction = utide.reconstruct(df.index, irls_utide, verbose=False)
-                irls_tide = irls_utide_reconstruction['h']
-
-            else:
-                # Currents: UTide supports u/v directly.
-                short_utide = utide.solve(
-                df.index,
-                df['u'],
-                df['v'],
-                lat=self.lat,
-                method='ols',
-                conf_int='none',
-                verbose=False,
-                trend=utide_trend,
-                nodal=True,
-                )
-                utide_train_pred = utide.reconstruct(df.index, short_utide, verbose=False)
-                utide_train = np.column_stack([utide_train_pred['u'], utide_train_pred['v']])
-
-                rt_u = rtide_noforcing[:, 0] if isinstance(rtide_noforcing, np.ndarray) and rtide_noforcing.ndim == 2 else rtide_noforcing
-                rt_v = rtide_noforcing[:, 1] if isinstance(rtide_noforcing, np.ndarray) and rtide_noforcing.ndim == 2 else None
-
-                rtide_utide = utide.solve(
-                df.index,
-                rt_u,
-                rt_v,
-                lat=self.lat,
-                method='ols',
-                conf_int='none',
-                verbose=False,
-                trend=utide_trend,
-                nodal=True,
-                )
-
-                irls_utide = utide.solve(
-                df.index,
-                df['u'],
-                df['v'],
-                lat=self.lat,
-                method='robust',
-                conf_int='none',
-                verbose=False,
-                trend=utide_trend,
-                nodal=True,
-                )
-
-                rtide_utide_reconstruction = utide.reconstruct(df.index, rtide_utide, verbose=False)
-                rtide_tide = np.column_stack([rtide_utide_reconstruction['u'], rtide_utide_reconstruction['v']])
-                irls_utide_reconstruction = utide.reconstruct(df.index, irls_utide, verbose=False)
-                irls_tide = np.column_stack([irls_utide_reconstruction['u'], irls_utide_reconstruction['v']])
-
-            self.rtide_ha = rtide_utide
-            self.utide_ha = short_utide
-            self.utide_irls = irls_utide
-
-        except Exception as e:
-            print(f"UTide error, this is not a problem with RTide: {e}")
-            utide_train = []
-            rtide_tide = []
-            irls_tide = []
-
         self.model = model
         
         
@@ -1348,9 +1256,6 @@ class RTide:
         self.train_predictions = {
         'rtide_train': preds_train,
         'train_observations': labels_train,
-        'utide_tide_train': utide_train,
-        'rtide_tide_train': rtide_tide,
-        'irls_utide_train': irls_tide,
         'RTide_nomulti': rtide_noforcing,
         }
         self.model_predictions = self.train_predictions
@@ -1484,6 +1389,11 @@ class RTide:
         test_X = dataset[:, n_outputs:num_cols]
         scaled_test_X = self._transform_X(test_X, featurewise=featurewise_X_scaling)
 
+        # Apply pre-computed PCA 
+        if self.pca is not None:
+            scaled_test_X = self.pca.transform(scaled_test_X)
+            self.pcad_test_X = scaled_test_X
+
         # Check if model uses trend estimation
         trend = getattr(self, 'trend', None)
         
@@ -1501,25 +1411,6 @@ class RTide:
             rtide_test = self.scaler_Y.inverse_transform(
                 model.predict([scaled_test_X, test_time.reshape(-1, 1)])
             )
-	
-        # UTide reconstructions (if available)
-        try:
-            ols_utide_reconstruction = utide.reconstruct(dfp.index, self.utide_ha, verbose=False)
-            rtide_utide_reconstruction = utide.reconstruct(dfp.index, self.rtide_ha, verbose=False)
-            irls_utide_reconstruction = utide.reconstruct(dfp.index, self.utide_irls, verbose=False)
-
-            if self.output_mode == 'elevation':
-                ols_utide = ols_utide_reconstruction['h']
-                rtide_tide = rtide_utide_reconstruction['h']
-                irls_tide = irls_utide_reconstruction['h']
-            else:
-                ols_utide = np.column_stack([ols_utide_reconstruction['u'], ols_utide_reconstruction['v']])
-                rtide_tide = np.column_stack([rtide_utide_reconstruction['u'], rtide_utide_reconstruction['v']])
-                irls_tide = np.column_stack([irls_utide_reconstruction['u'], irls_utide_reconstruction['v']])
-        except Exception:
-            ols_utide = []
-            rtide_tide = []
-            irls_tide = []
 
         # Observations may be NaN for pure forecasting.
         obs_block = dataset[:, 0:n_outputs]
@@ -1531,9 +1422,6 @@ class RTide:
             self.test_predictions = {
                 'rtide_test': rtide_test.reshape(-1),
                 'test_observations': np.array(test_observations).reshape(-1),
-                'utide_tide_test': ols_utide,
-                'rtide_tide_test': rtide_tide,
-                'irls_utide_test': irls_tide,
             }
             self.test_prediction_df = pd.DataFrame(
                 {'observations': dfp['observations'].to_numpy(), 'rtide': rtide_test.reshape(-1)},
@@ -1543,9 +1431,6 @@ class RTide:
             self.test_predictions = {
                 'rtide_test': rtide_test,
                 'test_observations': test_observations,
-                'utide_tide_test': ols_utide,
-                'rtide_tide_test': rtide_tide,
-                'irls_utide_test': irls_tide,
                 'rtide_test_u': rtide_test[:, 0],
                 'rtide_test_v': rtide_test[:, 1],
             }
